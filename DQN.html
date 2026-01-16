@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Guide DQN - Apprentissage par Renforcement</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; border-left: 4px solid #3498db; padding-left: 10px; }
+        h3 { color: #555; margin-top: 20px; }
+        code { background-color: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: 'Courier New', monospace; }
+        pre { background-color: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; border-left: 3px solid #3498db; }
+        pre code { background-color: transparent; padding: 0; }
+        .explanation { background-color: #e8f4f8; padding: 10px; border-radius: 5px; margin: 10px 0; border-left: 3px solid #3498db; }
+        .important { background-color: #fff3cd; padding: 10px; border-radius: 5px; margin: 10px 0; border-left: 3px solid #ffc107; }
+        ul, ol { margin-left: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Tutoriel d'Apprentissage par Renforcement (DQN)</h1>
+    <h2>Guide Étape par Étape</h2>
+
+    <h3>Introduction</h3>
+    <p>Ce guide vous accompagne dans l'implémentation d'un agent Deep Q-Learning (DQN) pour résoudre le problème CartPole-v1 avec PyTorch. L'agent doit maintenir un poteau en équilibre sur un chariot mobile en choisissant entre deux actions : déplacer le chariot à gauche ou à droite.</p>
+
+    <hr>
+
+    <h2>Étape 1 : Installation et Importation des Bibliothèques</h2>
+
+    <h3>1.1 Installation de Gymnasium</h3>
+    <p>Ouvrez votre terminal et exécutez :</p>
+    <pre><code>pip install gymnasium[classic_control]
+pip install torch matplotlib</code></pre>
+
+    <h3>1.2 Importation des Modules</h3>
+    <pre><code>import gymnasium as gym
+import math
+import random
+import matplotlib
+import matplotlib.pyplot as plt
+from collections import namedtuple, deque
+from itertools import count
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F</code></pre>
+
+    <div class="explanation">
+        <strong>Explication :</strong> Ces bibliothèques fournissent l'environnement de simulation (gymnasium), les outils de réseau neuronal (torch), et la visualisation (matplotlib).
+    </div>
+
+    <hr>
+
+    <h2>Étape 2 : Configuration de l'Environnement</h2>
+
+    <h3>2.1 Création de l'Environnement</h3>
+    <pre><code>env = gym.make("CartPole-v1")</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Crée l'environnement CartPole où notre agent va apprendre.
+    </div>
+
+    <h3>2.2 Configuration de Matplotlib</h3>
+    <pre><code>is_ipython = 'inline' in matplotlib.get_backend()
+if is_ipython:
+    from IPython import display
+
+plt.ion()  # Active le mode interactif</code></pre>
+
+    <h3>2.3 Sélection du Dispositif (GPU/CPU)</h3>
+    <pre><code>device = torch.device(
+    "cuda" if torch.cuda.is_available() else
+    "mps" if torch.backends.mps.is_available() else
+    "cpu"
+)</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Utilise le GPU si disponible pour accélérer l'entraînement, sinon utilise le CPU.
+    </div>
+
+    <hr>
+
+    <h2>Étape 3 : Mémoire de Rejeu (Replay Memory)</h2>
+
+    <h3>3.1 Définition de la Structure Transition</h3>
+    <pre><code>Transition = namedtuple('Transition',
+                        ('state', 'action', 'next_state', 'reward'))</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Un tuple nommé qui stocke une transition : état actuel, action prise, état suivant, et récompense obtenue.
+    </div>
+
+    <h3>3.2 Classe ReplayMemory</h3>
+    <pre><code>class ReplayMemory(object):
+    def __init__(self, capacity):
+        self.memory = deque([], maxlen=capacity)
+
+    def push(self, *args):
+        """Sauvegarde une transition"""
+        self.memory.append(Transition(*args))
+
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        return len(self.memory)</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Cette classe stocke les expériences passées de l'agent. En échantillonnant aléatoirement, nous décorrélons les transitions, ce qui stabilise l'entraînement.
+    </div>
+
+    <hr>
+
+    <h2>Étape 4 : Construction du Réseau Neuronal Q</h2>
+
+    <h3>4.1 Classe DQN</h3>
+    <pre><code>class DQN(nn.Module):
+    def __init__(self, n_observations, n_actions):
+        super(DQN, self).__init__()
+        self.layer1 = nn.Linear(n_observations, 128)
+        self.layer2 = nn.Linear(128, 128)
+        self.layer3 = nn.Linear(128, n_actions)
+
+    def forward(self, x):
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        return self.layer3(x)</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Ce réseau neuronal prend l'état de l'environnement en entrée et produit les valeurs Q pour chaque action possible. Il comprend trois couches entièrement connectées avec des fonctions d'activation ReLU.
+    </div>
+
+    <hr>
+
+    <h2>Étape 5 : Définition des Hyperparamètres</h2>
+    <pre><code>BATCH_SIZE = 128        # Nombre de transitions par batch
+GAMMA = 0.99            # Facteur d'actualisation
+EPS_START = 0.9         # Valeur initiale d'epsilon (exploration)
+EPS_END = 0.01          # Valeur finale d'epsilon
+EPS_DECAY = 2500        # Vitesse de décroissance d'epsilon
+TAU = 0.005             # Taux de mise à jour du réseau cible
+LR = 3e-4               # Taux d'apprentissage</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Ces hyperparamètres contrôlent le comportement de l'algorithme d'apprentissage.
+    </div>
+
+    <hr>
+
+    <h2>Étape 6 : Initialisation des Réseaux</h2>
+
+    <h3>6.1 Obtention des Dimensions</h3>
+    <pre><code>n_actions = env.action_space.n
+state, info = env.reset()
+n_observations = len(state)</code></pre>
+
+    <h3>6.2 Création des Réseaux Policy et Target</h3>
+    <pre><code>policy_net = DQN(n_observations, n_actions).to(device)
+target_net = DQN(n_observations, n_actions).to(device)
+target_net.load_state_dict(policy_net.state_dict())</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Le <code>policy_net</code> est utilisé pour choisir les actions, tandis que le <code>target_net</code> fournit des valeurs cibles stables pour l'entraînement.
+    </div>
+
+    <h3>6.3 Configuration de l'Optimiseur et de la Mémoire</h3>
+    <pre><code>optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
+memory = ReplayMemory(10000)
+steps_done = 0</code></pre>
+
+    <hr>
+
+    <h2>Étape 7 : Sélection d'Action (Stratégie Epsilon-Greedy)</h2>
+    <pre><code>def select_action(state):
+    global steps_done
+    sample = random.random()
+    eps_threshold = EPS_END + (EPS_START - EPS_END) * \\
+        math.exp(-1. * steps_done / EPS_DECAY)
+    steps_done += 1
+    
+    if sample > eps_threshold:
+        with torch.no_grad():
+            return policy_net(state).max(1).indices.view(1, 1)
+    else:
+        return torch.tensor([[env.action_space.sample()]], 
+                          device=device, dtype=torch.long)</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Cette fonction choisit une action soit aléatoirement (exploration) soit en utilisant le réseau neuronal (exploitation). La probabilité d'exploration diminue au fil du temps selon la décroissance exponentielle d'epsilon.
+    </div>
+
+    <hr>
+
+    <h2>Étape 8 : Visualisation des Performances</h2>
+    <pre><code>episode_durations = []
+
+def plot_durations(show_result=False):
+    plt.figure(1)
+    durations_t = torch.tensor(episode_durations, dtype=torch.float)
+    
+    if show_result:
+        plt.title('Résultat')
+    else:
+        plt.clf()
+        plt.title('Entraînement en cours...')
+    
+    plt.xlabel('Épisode')
+    plt.ylabel('Durée')
+    plt.plot(durations_t.numpy())
+    
+    if len(durations_t) >= 100:
+        means = durations_t.unfold(0, 100, 1).mean(1).view(-1)
+        means = torch.cat((torch.zeros(99), means))
+        plt.plot(means.numpy())
+
+    plt.pause(0.001)
+    if is_ipython:
+        if not show_result:
+            display.display(plt.gcf())
+            display.clear_output(wait=True)
+        else:
+            display.display(plt.gcf())</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Cette fonction trace la durée de chaque épisode et calcule une moyenne mobile sur 100 épisodes pour suivre les progrès.
+    </div>
+
+    <hr>
+
+    <h2>Étape 9 : Fonction d'Optimisation</h2>
+    <pre><code>def optimize_model():
+    if len(memory) < BATCH_SIZE:
+        return
+    
+    transitions = memory.sample(BATCH_SIZE)
+    batch = Transition(*zip(*transitions))
+
+    # Masque pour les états non-terminaux
+    non_final_mask = torch.tensor(
+        tuple(map(lambda s: s is not None, batch.next_state)), 
+        device=device, dtype=torch.bool
+    )
+    non_final_next_states = torch.cat([s for s in batch.next_state
+                                        if s is not None])
+    
+    state_batch = torch.cat(batch.state)
+    action_batch = torch.cat(batch.action)
+    reward_batch = torch.cat(batch.reward)
+
+    # Calcul de Q(s_t, a)
+    state_action_values = policy_net(state_batch).gather(1, action_batch)
+
+    # Calcul de V(s_{t+1})
+    next_state_values = torch.zeros(BATCH_SIZE, device=device)
+    with torch.no_grad():
+        next_state_values[non_final_mask] = target_net(
+            non_final_next_states
+        ).max(1).values
+    
+    # Calcul des valeurs Q attendues
+    expected_state_action_values = (next_state_values * GAMMA) + reward_batch
+
+    # Calcul de la perte de Huber
+    criterion = nn.SmoothL1Loss()
+    loss = criterion(state_action_values, 
+                    expected_state_action_values.unsqueeze(1))
+
+    # Optimisation
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
+    optimizer.step()</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Cette fonction effectue une étape d'optimisation en échantillonnant un batch de la mémoire, en calculant la perte (erreur de différence temporelle) et en mettant à jour les poids du réseau.
+    </div>
+
+    <hr>
+
+    <h2>Étape 10 : Boucle d'Entraînement Principale</h2>
+    <pre><code>if torch.cuda.is_available() or torch.backends.mps.is_available():
+    num_episodes = 600
+else:
+    num_episodes = 50
+
+for i_episode in range(num_episodes):
+    # Initialisation de l'environnement
+    state, info = env.reset()
+    state = torch.tensor(state, dtype=torch.float32, 
+                        device=device).unsqueeze(0)
+    
+    for t in count():
+        # Sélection et exécution d'une action
+        action = select_action(state)
+        observation, reward, terminated, truncated, _ = env.step(action.item())
+        reward = torch.tensor([reward], device=device)
+        done = terminated or truncated
+
+        if terminated:
+            next_state = None
+        else:
+            next_state = torch.tensor(observation, dtype=torch.float32, 
+                                     device=device).unsqueeze(0)
+
+        # Stockage de la transition
+        memory.push(state, action, next_state, reward)
+
+        # Passage à l'état suivant
+        state = next_state
+
+        # Optimisation du modèle
+        optimize_model()
+
+        # Mise à jour douce du réseau cible
+        target_net_state_dict = target_net.state_dict()
+        policy_net_state_dict = policy_net.state_dict()
+        for key in policy_net_state_dict:
+            target_net_state_dict[key] = (policy_net_state_dict[key] * TAU + 
+                                         target_net_state_dict[key] * (1 - TAU))
+        target_net.load_state_dict(target_net_state_dict)
+
+        if done:
+            episode_durations.append(t + 1)
+            plot_durations()
+            break
+
+print('Entraînement terminé')
+plot_durations(show_result=True)
+plt.ioff()
+plt.show()</code></pre>
+    <div class="explanation">
+        <strong>Explication :</strong> Cette boucle entraîne l'agent sur plusieurs épisodes. À chaque étape, l'agent choisit une action, observe le résultat, stocke l'expérience, optimise le réseau, et met à jour le réseau cible.
+    </div>
+
+    <hr>
+
+    <h2>Comprendre l'Algorithme DQN</h2>
+
+    <h3>Principes Fondamentaux</h3>
+
+    <p><strong>1. Fonction Q</strong></p>
+    <p>La fonction Q estime le retour total attendu en prenant une action <code>a</code> dans un état <code>s</code> :</p>
+    <ul>
+        <li>Q(s, a) = récompense future attendue</li>
+    </ul>
+
+    <p><strong>2. Équation de Bellman</strong></p>
+    <p>La fonction Q satisfait l'équation :</p>
+    <ul>
+        <li>Q(s, a) = r + γ × max Q(s', a')</li>
+    </ul>
+    <p>où :</p>
+    <ul>
+        <li>r = récompense immédiate</li>
+        <li>γ = facteur d'actualisation (GAMMA)</li>
+        <li>s' = état suivant</li>
+        <li>a' = action suivante</li>
+    </ul>
+
+    <p><strong>3. Erreur de Différence Temporelle</strong></p>
+    <ul>
+        <li>δ = Q(s, a) - (r + γ × max Q(s', a'))</li>
+    </ul>
+    <p>L'objectif est de minimiser cette erreur.</p>
+
+    <h3>Composants Clés</h3>
+
+    <p><strong>Mémoire de Rejeu</strong></p>
+    <p>Stocke les expériences passées pour un apprentissage plus stable en décorrélant les données d'entraînement.</p>
+
+    <p><strong>Réseau Cible</strong></p>
+    <p>Un réseau séparé mis à jour lentement pour fournir des valeurs cibles stables lors de l'entraînement.</p>
+
+    <p><strong>Exploration vs Exploitation</strong></p>
+    <p>La stratégie epsilon-greedy équilibre l'exploration (actions aléatoires) et l'exploitation (actions basées sur Q).</p>
+
+    <hr>
+
+    <h2>Conseils pour l'Exécution</h2>
+
+    <div class="important">
+        <ol>
+            <li><strong>Entraînement Initial :</strong> Les premières centaines d'épisodes peuvent sembler instables. C'est normal.</li>
+            <li><strong>Convergence :</strong> L'agent devrait atteindre des durées d'épisode de 500 pas après environ 400-600 épisodes.</li>
+            <li><strong>Réglage :</strong> Si la convergence n'est pas observée, essayez de :
+                <ul>
+                    <li>Augmenter le nombre d'épisodes</li>
+                    <li>Ajuster le taux d'apprentissage (LR)</li>
+                    <li>Modifier EPS_DECAY pour changer la vitesse d'exploration</li>
+                </ul>
+            </li>
+            <li><strong>Reproductibilité :</strong> Pour des résultats reproductibles, décommentez le code de seed dans le fichier original.</li>
+        </ol>
+    </div>
+
+    <hr>
+
+    <h2>Résultats Attendus</h2>
+
+    <p>Après un entraînement réussi, vous devriez observer :</p>
+    <ul>
+        <li>Augmentation progressive de la durée des épisodes</li>
+        <li>Stabilisation autour de 400-500 pas par épisode</li>
+        <li>Convergence de la moyenne mobile sur 100 épisodes</li>
+    </ul>
+
+    <p>Le graphique final montrera clairement l'amélioration des performances de l'agent au fil du temps.</p>
+
+    <hr>
+
+    <h2>Conclusion</h2>
+
+    <p>Vous avez maintenant implémenté un agent DQN complet capable d'apprendre à résoudre le problème CartPole. Cette approche peut être adaptée à d'autres environnements et constitue une base solide pour l'apprentissage par renforcement profond.</p>
+
+    <p><strong>Prochaines Étapes :</strong></p>
+    <ul>
+        <li>Expérimentez avec différents hyperparamètres</li>
+        <li>Essayez d'autres environnements Gymnasium</li>
+        <li>Implémentez des variantes comme Double DQN ou Dueling DQN</li>
+    </ul>
+</body>
+</html>
